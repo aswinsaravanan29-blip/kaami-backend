@@ -3,6 +3,61 @@ const router = express.Router();
 const auth = require('../middleware/auth');
 const db = require('../db');
 
+// @route    GET api/profile/public/:username
+// @desc     Get public profile data by username
+// @access   Public
+router.get('/public/:username', async (req, res) => {
+  try {
+    const { username } = req.params;
+
+    // 1. Fetch profile
+    const [profiles] = await db.query('SELECT * FROM profiles WHERE username = ?', [username]);
+    if (profiles.length === 0) {
+      return res.status(404).json({ msg: 'Profile not found' });
+    }
+
+    const profile = profiles[0];
+    const userId = profile.user_id;
+
+    // 2. Fetch projects
+    const [projects] = await db.query('SELECT * FROM projects WHERE user_id = ?', [userId]);
+
+    // 3. Fetch certificates
+    const [certificates] = await db.query('SELECT * FROM certificates WHERE user_id = ?', [userId]);
+
+    // 4. Fetch testimonials
+    const [testimonials] = await db.query('SELECT * FROM testimonials WHERE user_id = ?', [userId]);
+
+    // Parse tech_stack JSON for projects
+    const parsedProjects = projects.map(proj => {
+      let tech = [];
+      try {
+        tech = proj.tech_stack ? JSON.parse(proj.tech_stack) : [];
+      } catch (e) {
+        tech = proj.tech_stack ? proj.tech_stack.split(',') : [];
+      }
+      return { ...proj, tech };
+    });
+
+    res.json({
+      profile: {
+        username: profile.username,
+        displayName: profile.display_name,
+        profession: profile.profession,
+        themeMode: profile.theme_mode,
+        bio: profile.bio,
+        availability: profile.availability
+      },
+      projects: parsedProjects,
+      certificates,
+      testimonials
+    });
+  } catch (err) {
+    console.error("Fetch Public Profile Error:", err.message);
+    res.status(500).send('Server error');
+  }
+});
+
 // @route    GET api/profile
 // @desc     Get current user's profile and all associated data
 // @access   Private
