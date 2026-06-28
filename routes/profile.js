@@ -19,6 +19,10 @@ router.get('/public/:username', async (req, res) => {
     const profile = profiles[0];
     const userId = profile.user_id;
 
+    // Fetch user email
+    const [users] = await db.query('SELECT email FROM users WHERE id = ?', [userId]);
+    const email = users.length > 0 ? users[0].email : null;
+
     // 2. Fetch projects
     const [projects] = await db.query('SELECT * FROM projects WHERE user_id = ?', [userId]);
 
@@ -61,6 +65,7 @@ router.get('/public/:username', async (req, res) => {
         themeMode: profile.theme_mode,
         bio: profile.bio,
         availability: profile.availability,
+        email: email,
         checkedTasks: profile.checked_tasks ? JSON.parse(profile.checked_tasks) : {}
       },
       projects: parsedProjects,
