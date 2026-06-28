@@ -84,6 +84,20 @@ async function initializeDatabase() {
       // Column already exists or table issue, ignore
     }
 
+    try {
+      await db.query('ALTER TABLE profiles ADD COLUMN availability_requests_enabled TINYINT DEFAULT 1');
+      console.log('Added availability_requests_enabled column to profiles table');
+    } catch (err) {
+      // Column already exists or table issue, ignore
+    }
+
+    try {
+      await db.query('ALTER TABLE profiles ADD COLUMN scheduling_link VARCHAR(255) NULL');
+      console.log('Added scheduling_link column to profiles table');
+    } catch (err) {
+      // Column already exists or table issue, ignore
+    }
+
     // 5. testimonials table
     await db.query(`
       CREATE TABLE IF NOT EXISTS testimonials (

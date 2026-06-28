@@ -66,7 +66,9 @@ router.get('/public/:username', async (req, res) => {
         bio: profile.bio,
         availability: profile.availability,
         email: email,
-        checkedTasks: profile.checked_tasks ? JSON.parse(profile.checked_tasks) : {}
+        checkedTasks: profile.checked_tasks ? JSON.parse(profile.checked_tasks) : {},
+        availabilityRequestsEnabled: profile.availability_requests_enabled === 1,
+        schedulingLink: profile.scheduling_link
       },
       projects: parsedProjects,
       certificates,
@@ -112,6 +114,41 @@ router.post('/public/contact/:username', async (req, res) => {
   }
 });
 
+// @route    POST api/profile/public/stat/:username
+// @desc     Increment a public profile statistic (views, scans, downloads)
+// @access   Public
+router.post('/public/stat/:username', async (req, res) => {
+  const { username } = req.params;
+  const { type } = req.body; // 'view' | 'scan' | 'download'
+
+  if (!['view', 'scan', 'download'].includes(type)) {
+    return res.status(400).json({ msg: 'Invalid statistic type' });
+  }
+
+  try {
+    const [profiles] = await db.query('SELECT user_id, checked_tasks FROM profiles WHERE username = ?', [username]);
+    if (profiles.length === 0) {
+      return res.status(404).json({ msg: 'Profile not found' });
+    }
+
+    const profile = profiles[0];
+    const userId = profile.user_id;
+    const checkedTasks = profile.checked_tasks ? JSON.parse(profile.checked_tasks) : {};
+
+    // Increment count
+    const key = `${type}sCount`;
+    checkedTasks[key] = (checkedTasks[key] || 0) + 1;
+
+    const checkedTasksString = JSON.stringify(checkedTasks);
+    await db.query('UPDATE profiles SET checked_tasks = ? WHERE user_id = ?', [checkedTasksString, userId]);
+
+    res.json({ msg: `${type} incremented successfully`, count: checkedTasks[key] });
+  } catch (err) {
+    console.error("Increment Stat Error:", err.message);
+    res.status(500).send('Server error');
+  }
+});
+
 // @route    GET api/profile/check-username/:username
 // @desc     Check if a username is available (not taken and not reserved)
 // @access   Public
@@ -119,14 +156,41 @@ router.get('/check-username/:username', async (req, res) => {
   try {
     const { username } = req.params;
     const reserved = ["admin", "discover", "jobs", "verified", "community", "marketplace", "dashboard", "login", "register", "settings", "billing"];
+    const usernameLower = username.toLowerCase();
     
-    if (reserved.includes(username.toLowerCase())) {
-      return res.json({ available: false, msg: 'Username is reserved' });
-    }
+    // Check if original is available
+    const [profiles] = await db.query('SELECT user_id FROM profiles WHERE username = ?', [usernameLower]);
+    const isReserved = reserved.includes(usernameLower);
+    const isAlreadyTaken = profiles.length > 0;
 
-    const [profiles] = await db.query('SELECT user_id FROM profiles WHERE username = ?', [username]);
-    if (profiles.length > 0) {
-      return res.json({ available: false, msg: 'Username is already taken' });
+    if (isReserved || isAlreadyTaken) {
+      // Find first available suggestion
+      const candidates = [
+        `${usernameLower}-dev`,
+        `real-${usernameLower}`,
+        `${usernameLower}-builder`,
+        `proof-${usernameLower}`
+      ];
+      
+      // Add numeric candidates
+      for (let i = 1; i <= 9; i++) {
+        candidates.push(`${usernameLower}${i}`);
+      }
+
+      let suggestion = null;
+      for (const cand of candidates) {
+        const [rows] = await db.query('SELECT user_id FROM profiles WHERE username = ?', [cand]);
+        if (rows.length === 0 && !reserved.includes(cand)) {
+          suggestion = cand;
+          break;
+        }
+      }
+
+      return res.json({ 
+        available: false, 
+        suggestion: suggestion || `${usernameLower}-${Math.floor(100 + Math.random() * 900)}`,
+        msg: isReserved ? 'Username is reserved' : 'Username is already taken' 
+      });
     }
 
     res.json({ available: true });
@@ -216,7 +280,9 @@ router.get('/', auth, async (req, res) => {
         themeMode: profile.theme_mode,
         bio: profile.bio,
         availability: profile.availability,
-        checkedTasks
+        checkedTasks,
+        availabilityRequestsEnabled: profile.availability_requests_enabled === 1,
+        schedulingLink: profile.scheduling_link
       } : null,
       projects: parsedProjects,
       certificates,
@@ -236,7 +302,7 @@ router.get('/', auth, async (req, res) => {
 // @desc     Create or update profile settings
 // @access   Private
 router.post('/', auth, async (req, res) => {
-  const { username, displayName, profession, themeMode, bio, availability, checkedTasks } = req.body;
+  const { username, displayName, profession, themeMode, bio, availability, checkedTasks, availabilityRequestsEnabled, schedulingLink } = req.body;
 
   if (!username || !displayName || !profession) {
     return res.status(400).json({ msg: 'Please provide username, display name, and profession' });
@@ -252,9 +318,11 @@ router.post('/', auth, async (req, res) => {
       return res.status(400).json({ msg: 'Username slug is already reserved' });
     }
 
+    const enabledVal = availabilityRequestsEnabled === undefined ? 1 : (availabilityRequestsEnabled ? 1 : 0);
+
     await db.query(`
-      INSERT INTO profiles (user_id, username, display_name, profession, theme_mode, bio, availability, checked_tasks)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO profiles (user_id, username, display_name, profession, theme_mode, bio, availability, checked_tasks, availability_requests_enabled, scheduling_link)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON DUPLICATE KEY UPDATE
         username = VALUES(username),
         display_name = VALUES(display_name),
@@ -262,8 +330,10 @@ router.post('/', auth, async (req, res) => {
         theme_mode = VALUES(theme_mode),
         bio = VALUES(bio),
         availability = VALUES(availability),
-        checked_tasks = VALUES(checked_tasks)
-    `, [userId, username, displayName, profession, themeMode || 'modern', bio || '', availability || 'open-roles', checkedTasksString]);
+        checked_tasks = VALUES(checked_tasks),
+        availability_requests_enabled = VALUES(availability_requests_enabled),
+        scheduling_link = VALUES(scheduling_link)
+    `, [userId, username, displayName, profession, themeMode || 'modern', bio || '', availability || 'open-roles', checkedTasksString, enabledVal, schedulingLink || null]);
 
     res.json({ msg: 'Profile updated successfully' });
   } catch (err) {
@@ -276,20 +346,22 @@ router.post('/', auth, async (req, res) => {
 // @desc     Add a project
 // @access   Private
 router.post('/project', auth, async (req, res) => {
-  const { id, title, description, tech, link, year } = req.body;
+  const { id, title, description, desc, tech, link, year } = req.body;
+  const projectDesc = description || desc;
 
-  if (!id || !title || !description) {
+  if (!id || !title || !projectDesc) {
     return res.status(400).json({ msg: 'Project ID, title, and description are required' });
   }
 
   try {
     const userId = req.user.id;
+    const uniqueId = `${userId}-${id}`;
     const techStackString = tech ? JSON.stringify(tech) : '[]';
 
     await db.query(`
       INSERT INTO projects (id, user_id, title, description, tech_stack, link, year)
       VALUES (?, ?, ?, ?, ?, ?, ?)
-    `, [id, userId, title, description, techStackString, link || '', year || '2026']);
+    `, [uniqueId, userId, title, projectDesc, techStackString, link || '', year || '2026']);
 
     res.json({ msg: 'Project added successfully' });
   } catch (err) {
@@ -310,11 +382,12 @@ router.post('/certificate', auth, async (req, res) => {
 
   try {
     const userId = req.user.id;
+    const uniqueId = `${userId}-${id}`;
 
     await db.query(`
       INSERT INTO certificates (id, user_id, title, issuer, credential_id, issue_date, file_url)
       VALUES (?, ?, ?, ?, ?, ?, ?)
-    `, [id, userId, title, issuer, credId || '', date || '', fileUrl || null]);
+    `, [uniqueId, userId, title, issuer, credId || '', date || '', fileUrl || null]);
 
     res.json({ msg: 'Certificate linked successfully' });
   } catch (err) {
@@ -465,6 +538,130 @@ router.delete('/experience/:id', auth, async (req, res) => {
     res.json({ msg: 'Experience deleted successfully' });
   } catch (err) {
     console.error("Delete Experience Error:", err.message);
+    res.status(500).send('Server error');
+  }
+});
+
+// @route    DELETE api/profile/inbox/:id
+// @desc     Delete an inbox item (e.g. contact message)
+// @access   Private
+router.delete('/inbox/:id', auth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user.id;
+
+    // Verify ownership
+    const [items] = await db.query('SELECT user_id FROM inbox_items WHERE id = ?', [id]);
+    if (items.length === 0) {
+      return res.status(404).json({ msg: 'Message not found' });
+    }
+    if (items[0].user_id !== userId) {
+      return res.status(401).json({ msg: 'Not authorized' });
+    }
+
+    await db.query('DELETE FROM inbox_items WHERE id = ?', [id]);
+    res.json({ msg: 'Message deleted successfully' });
+  } catch (err) {
+    console.error("Delete Inbox Error:", err.message);
+    res.status(500).send('Server error');
+  }
+// @route    POST api/profile/public/book/:username
+// @desc     Submit availability slot booking request from public profile
+// @access   Public
+router.post('/public/book/:username', async (req, res) => {
+  const { username } = req.params;
+  const { senderName, email, topic, proposedSlots } = req.body;
+
+  if (!senderName || !email || !topic || !proposedSlots || !Array.isArray(proposedSlots)) {
+    return res.status(400).json({ msg: 'Sender name, email, topic, and proposed slots array are required' });
+  }
+
+  try {
+    // Find the user id for the given username
+    const [profiles] = await db.query('SELECT user_id FROM profiles WHERE username = ?', [username]);
+    if (profiles.length === 0) {
+      return res.status(404).json({ msg: 'Profile not found' });
+    }
+
+    const userId = profiles[0].user_id;
+    const detailsJson = JSON.stringify({
+      email,
+      topic,
+      proposedSlots,
+      status: 'Pending'
+    });
+
+    await db.query(`
+      INSERT INTO inbox_items (user_id, type, requester, details, timestamp)
+      VALUES (?, ?, ?, ?, ?)
+    `, [userId, 'Availability Request', senderName, detailsJson, new Date().toLocaleString()]);
+
+    res.json({ msg: 'Meeting request successfully registered!' });
+  } catch (err) {
+    console.error("Public Book Error:", err.message);
+    res.status(500).send('Server error');
+  }
+});
+
+// @route    POST api/profile/inbox/book/action
+// @desc     Approve or reject a booking slot request
+// @access   Private
+router.post('/inbox/book/action', auth, async (req, res) => {
+  const { id, action, selectedSlot, meetingLink } = req.body; // action: 'Approved' | 'Rejected'
+
+  if (!id || !action) {
+    return res.status(400).json({ msg: 'Request ID and action are required' });
+  }
+
+  try {
+    const userId = req.user.id;
+
+    // Verify ownership
+    const [items] = await db.query('SELECT * FROM inbox_items WHERE id = ?', [id]);
+    if (items.length === 0) {
+      return res.status(404).json({ msg: 'Request not found' });
+    }
+    if (items[0].user_id !== userId) {
+      return res.status(401).json({ msg: 'Not authorized' });
+    }
+
+    const item = items[0];
+    let details = {};
+    try {
+      details = JSON.parse(item.details);
+    } catch (e) {
+      // fallback
+    }
+
+    details.status = action;
+    if (action === 'Approved') {
+      details.confirmedSlot = selectedSlot;
+      details.meetingLink = meetingLink || '';
+    }
+
+    const detailsJson = JSON.stringify(details);
+
+    // Update inbox item status and details
+    await db.query('UPDATE inbox_items SET status = ?, details = ? WHERE id = ?', [action, detailsJson, id]);
+
+    // Log to activity feed
+    if (action === 'Approved') {
+      const timestamp = new Date().toLocaleString();
+      await db.query(`
+        INSERT INTO activities (user_id, text, type, timestamp)
+        VALUES (?, ?, ?, ?)
+      `, [userId, `Approved availability booking slot with ${item.requester} for ${selectedSlot}`, 'success', timestamp]);
+    } else {
+      const timestamp = new Date().toLocaleString();
+      await db.query(`
+        INSERT INTO activities (user_id, text, type, timestamp)
+        VALUES (?, ?, ?, ?)
+      `, [userId, `Declined meeting request from ${item.requester}`, 'info', timestamp]);
+    }
+
+    res.json({ msg: `Slot request successfully ${action.toLowerCase()}` });
+  } catch (err) {
+    console.error("Book Action Error:", err.message);
     res.status(500).send('Server error');
   }
 });
