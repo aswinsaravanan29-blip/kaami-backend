@@ -72,9 +72,17 @@ async function initializeDatabase() {
         credential_id VARCHAR(255),
         issue_date VARCHAR(100),
         verified TINYINT DEFAULT 1,
+        file_url VARCHAR(500),
         FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
     `);
+
+    try {
+      await db.query('ALTER TABLE certificates ADD COLUMN file_url VARCHAR(500) NULL');
+      console.log('Added file_url column to certificates table');
+    } catch (err) {
+      // Column already exists or table issue, ignore
+    }
 
     // 5. testimonials table
     await db.query(`
@@ -114,6 +122,20 @@ async function initializeDatabase() {
         FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
     `);
+
+    // 8. experiences table
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS experiences (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        user_id INT NOT NULL,
+        role VARCHAR(255) NOT NULL,
+        company VARCHAR(255) NOT NULL,
+        time_period VARCHAR(255) NOT NULL,
+        description TEXT,
+        evidence TEXT,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    `);
     
     console.log("Database tables initialized successfully.");
   } catch (error) {
@@ -125,6 +147,7 @@ async function initializeDatabase() {
 // Routes
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/profile', require('./routes/profile'));
+app.use('/api/upload', require('./routes/upload'));
 
 // Basic health check
 app.get('/health', (req, res) => {
